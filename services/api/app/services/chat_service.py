@@ -36,10 +36,10 @@ async def generate_answer(
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
     result = await db.execute(
         text("""
-            SELECT v.id, v.chunk_id, v.embedding <=> :embedding::vector AS distance
+            SELECT v.id, v.chunk_id, v.embedding <=> CAST(:embedding AS vector) AS distance
             FROM vectors v
             WHERE v.project_id = :project_id
-            ORDER BY v.embedding <=> :embedding::vector
+            ORDER BY v.embedding <=> CAST(:embedding AS vector)
             LIMIT :top_k
         """),
         {"embedding": embedding_str, "project_id": str(project_id), "top_k": top_k},

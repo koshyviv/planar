@@ -1,0 +1,114 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-planar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-planar_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-planar}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-planar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: >
+      sh -c "
+        /app/scripts/wait_for_it.sh db 5432 &&
+        cd /app &&
+        alembic -c migrations/alembic.ini upgrade head
+      "
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: >
+      sh -c "
+        /app/scripts/wait_for_it.sh db 5432 &&
+        /app/scripts/wait_for_it.sh redis 6379 &&
+        /app/scripts/wait_for_it.sh minio 9000 &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    env_file: .env
+    ports:
+      - "${API_PORT:-11434}:8000"
+    volumes:
+      - ./services/api/app:/app/services/api/app
+      - ./services/ui:/app/services/ui
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    working_dir: /app/services/api
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    command: >
+      sh -c "
+        /app/scripts/wait_for_it.sh db 5432 &&
+        /app/scripts/wait_for_it.sh redis 6379 &&
+        /app/scripts/wait_for_it.sh minio 9000 &&
+        celery -A app.celery_app worker --loglevel=info --concurrency=2
+      "
+    env_file: .env
+    volumes:
+      - ./services/worker/app:/app/services/worker/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    working_dir: /app/services/worker
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
